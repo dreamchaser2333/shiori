@@ -317,6 +317,7 @@
       for (const it of itemsForDate(st, day)) if (it.src === 'event' || it.ex) out.push(Object.assign({ day, kind2: 'item' }, it));
       for (const x of st.deadlines || []) if (x.due === day && x.status !== 'submitted') out.push({ day, kind2: 'deadline', title: x.title, kind: x.kind, ref: x.id });
       for (const a of st.annivs || []) { const n = annivNext(a, d); if (n.date === day) out.push({ day, kind2: 'anniv', title: a.name, kind: a.kind, years: n.years, ref: a.id }); }
+      for (const t of st.todos || []) if (!t.done && t.date === day) out.push({ day, kind2: 'todo', title: t.title, kind: '待辦', ref: t.id });
     }
     return out.sort((a, b) => a.day < b.day ? -1 : a.day > b.day ? 1 : (a.start || 0) - (b.start || 0));
   }

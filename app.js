@@ -16,24 +16,41 @@
   const VERSES = ['光陰者，百代之過客', '寸陰是競', '一寸光陰一寸金', '日月逝矣，歲不我與', '盛年不重來，一日難再晨', '及時當勉勵，歲月不待人'];
   const KIND_COLOR = { '課程': 'var(--c-course)', '打工': 'var(--c-work)', '換班': 'var(--c-work)', '代班': 'var(--c-work)', '臨時工作': 'var(--c-temp)', '會議': 'var(--c-temp)', '活動': 'var(--c-temp)', '其他': 'var(--c-temp)' };
   const CAT_COLOR = { '學習': 'var(--c-study)', '自媒體': 'var(--c-media)', '娛樂': 'var(--c-play)', '睡眠': 'var(--c-sleep)', '用餐': 'var(--c-meal)' };
-  const FOCUS_CATS = ['學習', '論文', '寫作', '自媒體'];
-  const FOCUS_TO_PLAN = { '學習': '學習', '論文': '學習', '自媒體': '自媒體' };
-
+    
   /* ---------- 資料 ---------- */
   function blank() {
     return {
-      v: 1, settings: { skin: 'hiiro', prep: 30, depart: 15 },
-      series: [], exceptions: [], events: [], deadlines: [], annivs: [],
+      v: 1, rev: 0, settings: { skin: 'hiiro', prep: 30, depart: 15 },
+      series: [], exceptions: [], events: [], deadlines: [], annivs: [], todos: [], reviews: {},
       plans: { cats: {}, templates: [], rules: [] }, planSkip: {},
-      sleep: [], focus: [], packs: { applied: [], later: null }, welcomed: false
+      sleep: [], packs: { applied: [], later: null }, welcomed: false, lastBackup: null
     };
   }
+  function migrate(o) {
+    o = Object.assign(blank(), o);
+    if (!o.reviews || Array.isArray(o.reviews)) o.reviews = {};
+    if (!Array.isArray(o.todos)) o.todos = [];
+    delete o.focus; // 專注計時已移除
+    return o;
+  }
   function load() {
-    try { const j = JSON.parse(localStorage.getItem(KEY) || 'null'); if (j && j.v) return Object.assign(blank(), j); } catch (e) { }
+    try { const j = JSON.parse(localStorage.getItem(KEY) || 'null'); if (j && j.v) return migrate(j); } catch (e) { }
     return blank();
   }
   let S = load();
-  function save() { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { toast('儲存失敗：手機空間可能不足'); } }
+  // 同時存在 localStorage 與 IndexedDB 兩處；任一處寫入成功就不會遺失，讀取時取較新的那份
+  function save() {
+    S.rev = Date.now();
+    const j = JSON.stringify(S); let ok = false;
+    try { localStorage.setItem(KEY, j); ok = true; } catch (e) { }
+    idbPut(KEY, j).catch(() => { if (!ok) toast('儲存失敗：手機空間可能不足'); });
+  }
+  async function loadIdb() {
+    try {
+      const o = JSON.parse(await within(idbGet(KEY), 2500) || 'null');
+      if (o && o.v && (o.rev || 0) > (S.rev || 0)) { S = migrate(o); applySkin(); render(); }
+    } catch (e) { }
+  }
 
   /* ---------- 小工具 ---------- */
   const T = E.today;
@@ -198,12 +215,14 @@
       let t = esc(u.title), sub = '';
       if (u.kind2 === 'item') { sub = u.cancelled ? (u.reason || '取消') : (hm(u.start) + '–' + hm(u.end) + (u.ex ? '・' + (u.reason || '變動') : '・' + u.kind)); }
       else if (u.kind2 === 'deadline') sub = u.kind + ' 截止';
+      else if (u.kind2 === 'todo') sub = '待辦';
       else sub = u.kind + (u.years ? '・' + u.years + (u.kind === '生日' ? ' 歲' : ' 週年') : '');
       h += `<li class="tap" data-act="goto" data-date="${u.day}"><span class="badge">${fmtMD(u.day)}<b style="font-size:13px">${E.WK[E.dow(u.day)]}</b></span><span class="t"><b>${t}</b><span>${esc(sub)}</span></span><span></span></li>`;
     }
     return h + '</ul></section>';
   }
 
+  function hadSomething(d) { return E.layout(S, d).timeline.length > 0 || S.sleep.length > 0; }
   function isEmpty() { return !S.series.length && !S.events.length && !S.deadlines.length && !S.annivs.length && !(S.plans.templates || []).length; }
 
   function renderDay() {
@@ -212,9 +231,15 @@
     h += '<main>';
     if (pendingPack) h += `<section class="card banner"><span>有新的學期安排：<b>${esc(pendingPack.title || '學期資料')}</b></span><span class="row-btns"><button class="btn sm" data-act="pack-apply">看看</button><button class="btn sm ghost" data-act="pack-later">稍後</button></span></section>`;
     if (isEmpty() && !S.welcomed) h += `<section class="card"><h2>${ORN}初次見面</h2><p class="muted" style="margin:8px 0 12px">目前還沒有任何行程。可以先載入一組示範資料，看看提醒、時間軸和壓縮規則的效果；之後在「更多」裡一鍵清除。</p><div class="row-btns"><button class="btn" data-act="demo">載入示範資料</button><button class="btn ghost" data-act="welcome-skip">直接開始</button></div></section>`;
-    if (isToday) h += remindersHtml();
+    if (isToday) {
+      h += backupNagHtml();
+      const y = E.addDays(T(), -1);
+      if (new Date().getHours() >= 5 && !S.reviews[y] && S.reviewSkip !== y && (S.welcomed || !isEmpty()) && hadSomething(y))
+        h += `<section class="card banner"><span>昨天的回顧還沒寫</span><span class="row-btns"><button class="btn sm" data-act="rv-open" data-date="${y}">補寫</button><button class="btn sm ghost" data-act="rv-skip" data-date="${y}">略過</button></span></section>`;
+      h += remindersHtml() + todosHtml() + nextWeekHtml();
+    }
     h += timelineHtml(viewDate);
-    if (isToday) h += upcomingHtml();
+    if (isToday && E.dow(T()) !== 7) h += upcomingHtml();
     h += '</main>';
     $('#app').innerHTML = h;
     if (isToday) startClock();
@@ -275,19 +300,22 @@
       const items = E.itemsForDate(S, d).filter(it => it.src === 'event' || it.ex);
       const dls = S.deadlines.filter(x => x.due === d && x.status !== 'submitted');
       const ans = S.annivs.filter(a => a.month === E.pd(d).getMonth() + 1 && a.day === E.pd(d).getDate());
+      const tds = S.todos.filter(t => !t.done && t.date === d);
       let dots = '';
       items.slice(0, 3).forEach(() => dots += '<i style="--c:var(--c-temp)"></i>');
       dls.slice(0, 2).forEach(() => dots += '<i style="--c:var(--acc)"></i>');
       ans.slice(0, 2).forEach(() => dots += '<i style="--c:var(--gold)"></i>');
+      tds.slice(0, 2).forEach(() => dots += '<i style="--c:var(--ink2)"></i>');
       const lb = (ans[0] && ans[0].name) || (dls[0] && dls[0].title) || (items[0] && items[0].title) || '';
       h += `<div class="c ${d.slice(0, 7) !== monthYM ? 'out' : ''} ${d === T() ? 'now' : ''}" data-act="goto" data-date="${d}"><span class="n">${E.pd(d).getDate()}</span><span class="lb">${esc(lb)}</span><span class="dots">${dots}</span></div>`;
       if (d.slice(0, 7) === monthYM) {
         items.forEach(it => list.push({ d, t: it.title, s: it.cancelled ? it.reason : (it.ex ? (it.reason || '變動') : it.kind) + ' ' + hm(it.start) }));
         dls.forEach(x => list.push({ d, t: x.title, s: x.kind + ' 截止' }));
         ans.forEach(a => list.push({ d, t: a.name, s: a.kind }));
+        tds.forEach(t => list.push({ d, t: t.title, s: '待辦' }));
       }
     }
-    h += `</div><div class="legend"><span><i style="--c:var(--c-temp)"></i>臨時／變動</span><span><i style="--c:var(--acc)"></i>截止</span><span><i style="--c:var(--gold)"></i>紀念日</span></div></section>`;
+    h += `</div><div class="legend"><span><i style="--c:var(--c-temp)"></i>臨時／變動</span><span><i style="--c:var(--acc)"></i>截止</span><span><i style="--c:var(--gold)"></i>紀念日</span><span><i style="--c:var(--ink2)"></i>待辦</span></div></section>`;
     if (list.length) {
       h += `<section class="card"><div class="head"><h2>${ORN}本月特別事項</h2></div><ul class="rem">`;
       list.forEach(x => h += `<li class="tap" data-act="goto" data-date="${x.d}"><span class="badge">${fmtMD(x.d)}<b style="font-size:13px">${E.WK[E.dow(x.d)]}</b></span><span class="t"><b>${esc(x.t)}</b><span>${esc(x.s)}</span></span><span></span></li>`);
@@ -296,111 +324,179 @@
     $('#app').innerHTML = h + '</main>';
   }
 
-  /* ---------- 專注（試用） ---------- */
-  const RUNKEY = 'shiori-focus-run';
-  let run = null; try { run = JSON.parse(localStorage.getItem(RUNKEY) || 'null'); } catch (e) { }
-  let focusPick = { cat: '學習', mode: 'pomo', mins: 25, dl: '' };
-  try { Object.assign(focusPick, JSON.parse(localStorage.getItem('shiori-focus-pick') || '{}')); } catch (e) { }
-  let wakeLock = null, tick = null;
-  function saveRun() { try { run ? localStorage.setItem(RUNKEY, JSON.stringify(run)) : localStorage.removeItem(RUNKEY); } catch (e) { } }
-  function elapsed() { if (!run) return 0; return (run.acc || 0) + (run.pausedAt ? 0 : Date.now() - run.start); }
-  async function keepAwake(on) {
-    try {
-      if (on && 'wakeLock' in navigator && !wakeLock) { wakeLock = await navigator.wakeLock.request('screen'); wakeLock.addEventListener('release', () => wakeLock = null); }
-      if (!on && wakeLock) { await wakeLock.release(); wakeLock = null; }
-    } catch (e) { }
+  /* ---------- 回顧 ---------- */
+  const MOODS = [['😄', '開心'], ['🥰', '幸福'], ['🤩', '興奮'], ['😆', '好笑'], ['😌', '平靜'], ['🙂', '還不錯'], ['😐', '普通'], ['🤔', '有心事'],
+    ['😴', '疲倦'], ['🥱', '提不起勁'], ['😮‍💨', '鬆一口氣'], ['😔', '低落'], ['😢', '難過'], ['😰', '焦慮'], ['😤', '煩躁'], ['😠', '生氣'],
+    ['🤯', '崩潰'], ['🤒', '不舒服'], ['🥹', '感動'], ['💪', '有幹勁']];
+  const moodOf = k => MOODS.find(m => m[0] === k);
+  const logicalToday = () => new Date().getHours() < 5 ? E.addDays(T(), -1) : T(); // 凌晨五點前還算前一天
+  function reviewBlocks(d) {
+    const L = E.layout(S, d), m = new Map();
+    L.plan.forEach(p => {
+      const k = p.tpl + ':' + p.idx;
+      if (!m.has(k)) m.set(k, { k, label: p.label, cat: p.cat, min: 0, pieces: [] });
+      const o = m.get(k); o.min += p.end - p.start; o.pieces.push([p.start, p.end]);
+    });
+    return [...m.values()].sort((a, b) => a.pieces[0][0] - b.pieces[0][0]);
   }
-  function focusMinutes(d, cat) { return S.focus.filter(f => f.date === d && (!cat || f.cat === cat)).reduce((s, f) => s + f.min, 0); }
-  function renderFocus() {
-    const d = T();
-    const L = E.layout(S, d);
-    const running = !!run;
-    const el = elapsed();
-    const target = run ? (run.mode === 'pomo' ? run.mins * 60000 : 0) : focusPick.mins * 60000;
-    const showMs = run ? (run.mode === 'pomo' ? Math.max(0, target - el) : el) : (focusPick.mode === 'pomo' ? target : 0);
-    const over = run && run.mode === 'pomo' && el > target ? el - target : 0;
-    const shown = over || showMs;
-    const mm = Math.floor(shown / 60000), ss = Math.floor(shown / 1000) % 60;
-    const dls = S.deadlines.filter(x => x.status === 'doing');
-    let h = `<div class="bar"><h1>專注</h1><span class="sub">試用版</span></div><main><section class="card">
-      <div class="ring"><canvas id="ring" width="440" height="440"></canvas><div class="in"><b id="rt">${over ? '+' : ''}${E.pad(mm)}:${E.pad(ss)}</b><span>${running ? (run.pausedAt ? '暫停中' : esc(run.cat) + '・專注中') : (focusPick.mode === 'pomo' ? '番茄鐘' : '正計時')}</span></div></div>`;
-    if (!running) {
-      h += `<div class="f"><span class="lb">項目</span><div class="pick">${FOCUS_CATS.map(c => `<button class="${focusPick.cat === c ? 'on' : ''}" data-act="fcat" data-v="${c}">${c}</button>`).join('')}</div></div>
-        <div class="f"><span class="lb">方式</span><div class="seg"><button class="${focusPick.mode === 'pomo' ? 'on' : ''}" data-act="fmode" data-v="pomo">番茄鐘</button><button class="${focusPick.mode === 'up' ? 'on' : ''}" data-act="fmode" data-v="up">正計時</button></div></div>
-        ${focusPick.mode === 'pomo' ? `<div class="f"><span class="lb">長度</span><div class="pick">${[25, 40, 50, 60, 90].map(n => `<button class="${focusPick.mins === n ? 'on' : ''}" data-act="fmins" data-v="${n}">${n} 分</button>`).join('')}</div></div>` : ''}
-        ${dls.length ? `<div class="f"><label for="fdl">這段在做哪件事（選填）</label><select id="fdl"><option value="">（不指定）</option>${dls.map(x => `<option value="${x.id}" ${focusPick.dl === x.id ? 'selected' : ''}>${esc(x.title)}</option>`).join('')}</select></div>` : ''}
-        <button class="btn wide" data-act="fstart">開始</button>`;
-    } else {
-      h += `<div class="row-btns" style="justify-content:center">${run.pausedAt ? '<button class="btn" data-act="fresume">繼續</button>' : '<button class="btn ghost" data-act="fpause">暫停</button>'}<button class="btn" data-act="fstop">結束並記錄</button><button class="btn ghost" data-act="fcancel">放棄</button></div>
-        <p class="muted" style="text-align:center;margin-top:8px">計時期間螢幕保持亮著。鎖屏或切走後回來，時間一樣準，但時間到的那一刻不會響。</p>`;
+  const SCORE = { done: 1, part: .5, no: 0 };
+  function rateOf(d, cat) {
+    const r = S.reviews[d]; if (!r || !r.plan) return null;
+    let got = 0, all = 0;
+    for (const b of reviewBlocks(d)) { const v = r.plan[b.k]; if (!v || (cat && b.cat !== cat)) continue; got += SCORE[v] * b.min; all += b.min; }
+    return all ? got / all : null;
+  }
+  function rateRange(a, b, cat) {
+    let got = 0, all = 0;
+    for (let d = a; d <= b; d = E.addDays(d, 1)) {
+      const r = S.reviews[d]; if (!r || !r.plan) continue;
+      for (const bl of reviewBlocks(d)) { const v = r.plan[bl.k]; if (!v || (cat && bl.cat !== cat)) continue; got += SCORE[v] * bl.min; all += bl.min; }
     }
-    h += `</section>`;
-    // 今日對照
-    const rows = ['學習', '自媒體'].map(c => {
-      const plan = L.planned[c] || 0;
-      const act = S.focus.filter(f => f.date === d && FOCUS_TO_PLAN[f.cat] === c).reduce((s, f) => s + f.min, 0);
-      return { c, plan, act };
+    return all ? got / all : null;
+  }
+  const pct = r => r == null ? '—' : Math.round(r * 100) + '%';
+  function reviewForm(d, after) {
+    const r = S.reviews[d] || { plan: {}, mood: '', text: '' };
+    const bl = reviewBlocks(d);
+    const isLT = d === logicalToday();
+    openSheet(`<h3>${isLT ? '今天' : fmtDay(d)}的回顧</h3>
+      ${bl.length ? `<div class="f"><span class="lb">規劃完成度</span><ul class="list" id="rv-pl">${bl.map(b => `<li class="rvrow" data-k="${b.k}"><span><b>${esc(b.label)}</b><span>${b.pieces.map(p => hm(p[0]) + '–' + hm(p[1])).join('、')}・${dur(b.min)}</span></span>
+        <span class="seg sm">${[['done', '有做'], ['part', '一部分'], ['no', '沒做']].map(([v, l]) => `<button type="button" class="${r.plan[b.k] === v ? 'on' : ''}" data-v="${v}">${l}</button>`).join('')}</span></li>`).join('')}</ul></div>` : '<p class="muted" style="margin-bottom:10px">這天沒有規劃時段。</p>'}
+      <div class="f"><span class="lb">心情</span><div class="moods" id="rv-md">${MOODS.map(m => `<button type="button" class="${r.mood === m[0] ? 'on' : ''}" data-v="${m[0]}"><i>${m[0]}</i>${m[1]}</button>`).join('')}</div></div>
+      ${fld('一句話（選填）', `<textarea id="rv-tx" maxlength="300" placeholder="今天發生了什麼">${esc(r.text)}</textarea>`, 'rv-tx')}
+      <button class="btn wide" id="rv-save">記下</button>`, root => {
+      root.querySelectorAll('.rvrow').forEach(li => li.querySelectorAll('button').forEach(b => b.onclick = () => { li.querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b && !b.classList.contains('on'))); }));
+      root.querySelectorAll('#rv-md button').forEach(b => b.onclick = () => root.querySelectorAll('#rv-md button').forEach(x => x.classList.toggle('on', x === b && !b.classList.contains('on'))));
+      root.querySelector('#rv-save').onclick = () => {
+        const plan = {};
+        root.querySelectorAll('.rvrow').forEach(li => { const on = li.querySelector('button.on'); if (on) plan[li.dataset.k] = on.dataset.v; });
+        const md = root.querySelector('#rv-md button.on');
+        S.reviews[d] = { plan, mood: md ? md.dataset.v : '', text: val('rv-tx'), at: new Date().toISOString() };
+        save(); closeSheet(); render(); toast(after || '已記下');
+      };
     });
-    h += `<section class="card"><div class="head"><h2>${ORN}今天</h2><button class="lnk" data-act="fmanual">＋ 補登</button></div>`;
-    rows.forEach(r => {
-      const pct = r.plan ? Math.min(100, r.act / r.plan * 100) : (r.act ? 100 : 0);
-      h += `<div style="margin:6px 0 10px"><div style="display:flex;justify-content:space-between;font-size:14px"><span>${r.c}</span><span class="muted">${dur(r.act)}／規劃 ${r.plan ? dur(r.plan) : '—'}</span></div><div class="prog"><i style="--c:${CAT_COLOR[r.c]};width:${pct}%"></i></div></div>`;
-    });
-    const other = FOCUS_CATS.filter(c => !FOCUS_TO_PLAN[c]).map(c => [c, focusMinutes(d, c)]).filter(x => x[1]);
-    if (other.length) h += `<p class="muted">${other.map(x => x[0] + ' ' + dur(x[1])).join('・')}</p>`;
-    h += `<p class="muted" style="margin-top:6px">「論文」算進學習；「寫作」單獨統計。</p></section>`;
-    // 本週
-    const ws = monday(d);
-    const wk = [...Array(7)].map((_, i) => { const dd = E.addDays(ws, i); return { dd, m: focusMinutes(dd) }; });
-    const mx = Math.max(60, ...wk.map(x => x.m));
-    const wsum = wk.reduce((s, x) => s + x.m, 0);
-    h += `<section class="card"><div class="head"><h2>${ORN}本週</h2><span class="sub">共 ${dur(wsum)}</span></div><div class="bars">${wk.map(x => `<div><span>${x.m ? durS(x.m) : ''}</span><i style="height:${x.m / mx * 80}%"></i><span>${E.WK[E.dow(x.dd)]}</span></div>`).join('')}</div>`;
-    const byCat = FOCUS_CATS.map(c => [c, S.focus.filter(f => f.date >= ws && f.date <= E.addDays(ws, 6) && f.cat === c).reduce((s, f) => s + f.min, 0)]).filter(x => x[1]);
-    if (byCat.length) h += `<p class="muted" style="margin-top:8px">${byCat.map(x => x[0] + ' ' + dur(x[1])).join('・')}</p>`;
-    const streak = (() => { let n = 0, dd = d; if (!focusMinutes(dd)) dd = E.addDays(dd, -1); while (focusMinutes(dd) > 0) { n++; dd = E.addDays(dd, -1); } return n; })();
-    if (streak) h += `<p class="muted">已連續 ${streak} 天有專注紀錄</p>`;
+  }
+  function renderReview() {
+    const lt = logicalToday();
+    const r = S.reviews[lt];
+    let h = `<div class="bar"><h1>回顧</h1><span class="sub">${fmtDay(lt)}</span></div><main>`;
+    // 今天
+    h += `<section class="card"><div class="head"><h2>${ORN}今天</h2>${r ? '<button class="lnk" data-act="rv-open" data-date="' + lt + '">修改</button>' : ''}</div>`;
+    if (r) {
+      const m = moodOf(r.mood), rt = rateOf(lt);
+      h += `<div class="rvsum"><span class="emo">${m ? m[0] : '・'}</span><span><b>${m ? m[1] : '沒選心情'}${rt != null ? '<span class="tag">完成 ' + pct(rt) + '</span>' : ''}</b><span>${esc(r.text || '（沒寫）')}</span></span></div>`;
+    } else h += `<p class="muted" style="margin:4px 0 10px">還沒寫。睡前按「要睡了」也會自動打開。</p><button class="btn wide" data-act="rv-open" data-date="${lt}">寫今天的回顧</button>`;
     h += '</section>';
-    // 紀錄
-    const recent = S.focus.slice(-8).reverse();
+    // 本週
+    const ws = monday(lt), we = E.addDays(ws, 6);
+    const days = [...Array(7)].map((_, i) => E.addDays(ws, i));
+    h += `<section class="card"><div class="head"><h2>${ORN}本週</h2><span class="sub">規劃完成 ${pct(rateRange(ws, we))}</span></div><div class="wkrv">`;
+    days.forEach(d => {
+      const rr = S.reviews[d], rt = rateOf(d), m = rr && moodOf(rr.mood);
+      h += `<button data-act="${d <= lt ? 'rv-open' : ''}" data-date="${d}" class="${d === lt ? 'now' : ''}"><span>${E.WK[E.dow(d)]}</span><i>${m ? m[0] : (d <= lt ? '·' : '')}</i><b class="prog"><i style="--c:var(--acc);width:${rt == null ? 0 : rt * 100}%"></i></b><small>${rt == null ? '' : pct(rt)}</small></button>`;
+    });
+    h += '</div>';
+    const cs = ['學習', '自媒體'].map(c => c + ' ' + pct(rateRange(ws, we, c))).join('・');
+    h += `<p class="muted" style="margin-top:8px">${cs}</p></section>`;
+    // 本月
+    const [y, mo] = rvMonth.split('-').map(Number);
+    const m1 = rvMonth + '-01', mN = rvMonth + '-' + E.pad(new Date(y, mo, 0).getDate());
+    const mdays = Object.keys(S.reviews).filter(d => d >= m1 && d <= mN);
+    const cnt = {}; mdays.forEach(d => { const k = S.reviews[d].mood; if (k) cnt[k] = (cnt[k] || 0) + 1; });
+    const top = Object.entries(cnt).sort((a, b) => b[1] - a[1]);
+    const sl = S.sleep.filter(s => s.w && E.ds(new Date(s.w)) >= m1 && E.ds(new Date(s.w)) <= mN);
+    let slh = '';
+    if (sl.length) {
+      const bedA = sl.reduce((s, r2) => { const d = new Date(r2.s); let x = d.getHours() * 60 + d.getMinutes(); if (x < 720) x += 1440; return s + x; }, 0) / sl.length;
+      const wakeA = sl.reduce((s, r2) => { const d = new Date(r2.w); return s + d.getHours() * 60 + d.getMinutes(); }, 0) / sl.length;
+      const durA = sl.reduce((s, r2) => s + (new Date(r2.w) - new Date(r2.s)) / 60000, 0) / sl.length;
+      slh = `<div class="stat" style="margin-top:10px"><div><div class="k">平均入睡</div><div class="v">${hm(Math.round(bedA) % 1440)}</div></div><div><div class="k">平均起床</div><div class="v">${hm(Math.round(wakeA))}</div></div><div><div class="k">平均睡眠</div><div class="v">${durS(durA)}</div></div></div>`;
+    }
+    h += `<section class="card"><div class="daynav"><button class="arr" data-act="rvm" data-v="-1">‹</button><div class="d">${y} 年 ${mo} 月<small>寫了 ${mdays.length} 天・規劃完成 ${pct(rateRange(m1, mN))}</small></div><button class="arr" data-act="rvm" data-v="1">›</button></div>
+      ${top.length ? `<div class="chips">${top.map(([k, n]) => { const mm = moodOf(k); return `<span class="chip">${k} ${mm ? mm[1] : ''} <i>${n}</i></span>`; }).join('')}</div>` : '<p class="muted">這個月還沒有心情紀錄。</p>'}
+      ${slh}<div style="text-align:center;margin-top:8px"><button class="lnk" data-act="m-sleep">睡眠紀錄 ›</button></div></section>`;
+    // 最近
+    const recent = Object.keys(S.reviews).sort().reverse().slice(0, 14);
     if (recent.length) {
-      h += `<section class="card"><div class="head"><h2>${ORN}最近紀錄</h2></div><ul class="list">`;
-      recent.forEach(f => { const dl = S.deadlines.find(x => x.id === f.dl); h += `<li><button class="it" data-act="fdel" data-id="${f.id}"><span><b>${esc(f.cat)} ${dur(f.min)}</b><span>${fmtDay(f.date)}${f.at ? ' ' + f.at : ''}${f.manual ? '・補登' : ''}${dl ? '・' + esc(dl.title) : ''}</span></span><span class="muted">刪除</span></button></li>`; });
+      h += `<section class="card"><div class="head"><h2>${ORN}最近的回顧</h2></div><ul class="rem">`;
+      recent.forEach(d => { const rr = S.reviews[d], m = moodOf(rr.mood), rt = rateOf(d); h += `<li class="tap" data-act="rv-open" data-date="${d}"><span class="badge">${fmtMD(d)}<b style="font-size:13px">${E.WK[E.dow(d)]}</b></span><span class="t"><b>${m ? m[0] + ' ' + m[1] : '・'}${rt != null ? '<span class="tag">' + pct(rt) + '</span>' : ''}</b><span>${esc(rr.text || '')}</span></span><span></span></li>`; });
       h += '</ul></section>';
     }
     $('#app').innerHTML = h + '</main>';
-    drawRing(run ? (run.mode === 'pomo' ? el / target : (el % 3600000) / 3600000) : 0);
-    clearInterval(tick);
-    if (run && !run.pausedAt) {
-      keepAwake(true);
-      tick = setInterval(() => {
-        if (view !== 'focus') return;
-        const e2 = elapsed();
-        const tg = run.mins * 60000, ov = run.mode === 'pomo' && e2 > tg;
-        const t2 = run.mode === 'pomo' ? (ov ? e2 - tg : tg - e2) : e2;
-        const r = $('#rt'); if (r) r.textContent = (ov ? '+' : '') + E.pad(Math.floor(t2 / 60000)) + ':' + E.pad(Math.floor(t2 / 1000) % 60);
-        drawRing(run.mode === 'pomo' ? e2 / (run.mins * 60000) : (e2 % 3600000) / 3600000);
-        if (run.mode === 'pomo' && e2 >= run.mins * 60000 && !run.rang) { run.rang = true; saveRun(); chime(); toast('時間到，記得結束並記錄'); }
-      }, 1000);
-    } else keepAwake(false);
   }
-  function chime() {
-    try { navigator.vibrate && navigator.vibrate([200, 100, 200]); } catch (e) { }
-    try {
-      const ac = new (window.AudioContext || window.webkitAudioContext)();
-      [0, .35].forEach((t, i) => { const o = ac.createOscillator(), g = ac.createGain(); o.frequency.value = i ? 660 : 880; g.gain.setValueAtTime(.0001, ac.currentTime + t); g.gain.exponentialRampToValueAtTime(.25, ac.currentTime + t + .02); g.gain.exponentialRampToValueAtTime(.0001, ac.currentTime + t + .6); o.connect(g).connect(ac.destination); o.start(ac.currentTime + t); o.stop(ac.currentTime + t + .7); });
-    } catch (e) { }
-  }
+  let rvMonth = T().slice(0, 7);
   function cssv(n) { return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
-  function drawRing(p) {
-    const c = $('#ring'); if (!c) return;
-    const x = c.getContext('2d'), W = 440, R = 190;
-    x.clearRect(0, 0, W, W);
-    x.save(); x.translate(W / 2, W / 2);
-    x.strokeStyle = cssv('--line'); x.lineWidth = 10; x.beginPath(); x.arc(0, 0, R, 0, Math.PI * 2); x.stroke();
-    for (let i = 0; i < 60; i++) { const a = i / 60 * Math.PI * 2; x.strokeStyle = cssv('--gold'); x.globalAlpha = i % 5 ? .35 : .9; x.lineWidth = i % 5 ? 2 : 4; x.beginPath(); x.moveTo(Math.sin(a) * (R - 22), -Math.cos(a) * (R - 22)); x.lineTo(Math.sin(a) * (R - (i % 5 ? 30 : 38)), -Math.cos(a) * (R - (i % 5 ? 30 : 38))); x.stroke(); }
-    x.globalAlpha = 1;
-    if (p > 0) { x.strokeStyle = cssv('--acc'); x.lineWidth = 10; x.lineCap = 'round'; x.beginPath(); x.arc(0, 0, R, -Math.PI / 2, -Math.PI / 2 + Math.min(1, p) * Math.PI * 2); x.stroke(); }
-    x.restore();
+
+  /* ---------- 待辦 ---------- */
+  function todoForm(t) {
+    t = t || { title: '', date: '', note: '' };
+    const isNew = !t.id;
+    openSheet(`<h3>${isNew ? '新增' : '編輯'}待辦</h3>
+      ${fld('要做什麼', inp('td-title', t.title, 'text', 'placeholder="例如：買洗衣球"'), 'td-title')}
+      ${fld('哪天提醒（選填）', inp('td-date', t.date, 'date'), 'td-date')}
+      ${fld('備註（選填）', inp('td-note', t.note), 'td-note')}
+      <p class="note">設了日期，那天起出現在首頁；沒設日期的，會一直列在首頁「待辦」裡，直到你勾掉。</p>
+      <div class="row-btns"><button class="btn" id="td-save">儲存</button>${isNew ? '' : `<button class="btn ghost" id="td-del">刪除</button>${t.done ? '<button class="btn ghost" id="td-undo">改回未完成</button>' : ''}`}</div>`, root => {
+      root.querySelector('#td-save').onclick = () => {
+        const o = { title: val('td-title'), date: val('td-date'), note: val('td-note') };
+        if (!o.title) return toast('請填要做什麼');
+        if (isNew) S.todos.push(Object.assign({ id: uid(), done: false, created: T() }, o)); else Object.assign(S.todos.find(x => x.id === t.id), o);
+        save(); closeSheet(); render(); toast('已儲存');
+      };
+      const del = root.querySelector('#td-del'); if (del) del.onclick = () => { S.todos = S.todos.filter(x => x.id !== t.id); save(); closeSheet(); render(); toast('已刪除'); };
+      const un = root.querySelector('#td-undo'); if (un) un.onclick = () => { const x = S.todos.find(y => y.id === t.id); x.done = false; x.doneAt = null; save(); closeSheet(); render(); };
+    });
+  }
+  function listTodos() {
+    const open = S.todos.filter(t => !t.done).sort((a, b) => (a.date || '9999') < (b.date || '9999') ? -1 : 1);
+    const done = S.todos.filter(t => t.done).sort((a, b) => (a.doneAt || '') > (b.doneAt || '') ? -1 : 1).slice(0, 15);
+    const row = t => `<li><button class="it" data-id="${t.id}"><span><b>${t.done ? '✓ ' : ''}${esc(t.title)}</b><span>${t.date ? fmtDay(t.date) : '未排日期'}${t.note ? '・' + esc(t.note) : ''}</span></span><span class="muted">›</span></button></li>`;
+    openSheet(`<h3>待辦</h3><button class="btn wide" id="add">＋ 新增待辦</button>
+      <ul class="list" style="margin-top:8px">${open.map(row).join('') || '<li class="muted" style="padding:10px 0">沒有未完成的待辦</li>'}</ul>
+      ${done.length ? `<p class="muted" style="margin-top:14px">最近完成</p><ul class="list">${done.map(row).join('')}</ul>` : ''}`, root => {
+      root.querySelector('#add').onclick = () => todoForm();
+      root.querySelectorAll('.it').forEach(b => b.onclick = () => todoForm(S.todos.find(x => x.id === b.dataset.id)));
+    });
+  }
+  function todosHtml() {
+    const d = T();
+    const due = S.todos.filter(t => !t.done && t.date && t.date <= d).sort((a, b) => a.date < b.date ? -1 : 1);
+    const free = S.todos.filter(t => !t.done && !t.date);
+    if (!due.length && !free.length) return '';
+    const show = due.concat(free.slice(0, Math.max(0, 6 - due.length)));
+    const more = due.length + free.length - show.length;
+    let h = `<section class="card"><div class="head"><h2>${ORN}待辦</h2><button class="lnk" data-act="m-todos">全部 ›</button></div><ul class="rem">`;
+    show.forEach(t => {
+      const late = t.date && t.date < d ? E.diffDays(t.date, d) : 0;
+      h += `<li><button class="tick" data-act="td-done" data-id="${t.id}" aria-label="完成"></button><span class="t tap" data-act="td-edit" data-id="${t.id}"><b>${esc(t.title)}</b><span>${t.date ? (late ? '已過 ' + late + ' 天' : '今天') : '未排日期'}${t.note ? '・' + esc(t.note) : ''}</span></span><span></span></li>`;
+    });
+    if (more > 0) h += `<li class="tap" data-act="m-todos"><span></span><span class="t"><span>還有 ${more} 件 ›</span></span><span></span></li>`;
+    return h + '</ul></section>';
+  }
+
+  /* ---------- 週日：下週預覽 ---------- */
+  function nextWeekHtml() {
+    const d = T(); if (E.dow(d) !== 7) return '';
+    const a = E.addDays(d, 1), b = E.addDays(d, 7);
+    let work = 0, cancelled = 0;
+    const rows = [];
+    for (let x = a; x <= b; x = E.addDays(x, 1)) {
+      for (const it of E.itemsForDate(S, x)) {
+        if (it.src === 'series' && it.kind === '打工' && !it.cancelled) work += it.end - it.start;
+        if (it.src === 'event' && it.work) work += it.end - it.start;
+        if (it.cancelled && it.kind === '課程') cancelled++;
+        if (it.src === 'event' || it.ex) rows.push({ d: x, t: it.title, s: it.cancelled ? it.reason : (it.ex ? (it.reason || '變動') + ' ' + hm(it.start) : it.kind + ' ' + hm(it.start) + '–' + hm(it.end)) });
+      }
+      S.deadlines.filter(y => y.due === x && y.status !== 'submitted').forEach(y => rows.push({ d: x, t: y.title, s: y.kind + ' 截止', hot: true }));
+      S.annivs.forEach(an => { const n = E.annivNext(an, x); if (n.date === x) rows.push({ d: x, t: an.name, s: an.kind }); });
+      S.todos.filter(t => !t.done && t.date === x).forEach(t => rows.push({ d: x, t: t.title, s: '待辦' }));
+    }
+    let h = `<section class="card"><div class="head"><h2>${ORN}下週預覽</h2><span class="sub">${fmtMD(a)} – ${fmtMD(b)}</span></div>
+      <div class="chips"><span class="chip">打工 <i>${dur(work)}</i></span><span class="chip">特別事項 <i>${rows.length}</i></span>${cancelled ? `<span class="chip">停課 <i>${cancelled} 堂</i></span>` : ''}</div>`;
+    if (!rows.length) return h + '<p class="muted">下週沒有特別的事，照常過日子。</p></section>';
+    h += '<ul class="rem">';
+    rows.forEach(r => h += `<li class="tap" data-act="goto" data-date="${r.d}"><span class="badge ${r.hot ? 'hot' : ''}">${fmtMD(r.d)}<b style="font-size:13px">${E.WK[E.dow(r.d)]}</b></span><span class="t"><b>${esc(r.t)}</b><span>${esc(r.s)}</span></span><span></span></li>`);
+    return h + '</ul></section>';
   }
 
   /* ---------- 更多 ---------- */
@@ -409,6 +505,7 @@
     const ss = sleepState();
     let h = `<div class="bar"><h1>更多</h1></div><main>
     <section class="card"><ul class="menu">
+      <li><button data-act="m-todos">待辦<span>${S.todos.filter(t => !t.done).length} 件未完成 ›</span></button></li>
       <li><button data-act="m-deadlines">截止事項<span>${live} 件未繳交 ›</span></button></li>
       <li><button data-act="m-annivs">紀念日<span>${S.annivs.length} 個 ›</span></button></li>
       <li><button data-act="m-series">常規行程（課程、打工）<span>${S.series.length} 條 ›</span></button></li>
@@ -423,7 +520,7 @@
     <section class="card"><ul class="menu">
       <li><button data-act="m-skin">外觀<span>${skin().name} ›</span></button></li>
       <li><button data-act="m-pack">學期資料（加密匯入）<span>${S.packs.applied.length ? '已套用 ' + S.packs.applied.length + ' 次' : '尚未套用'} ›</span></button></li>
-      <li><button data-act="m-backup">備份與還原<span>匯出到電腦 ›</span></button></li>
+      <li><button data-act="m-backup">備份與還原（含小金庫）<span>${S.lastBackup ? daysSince(S.lastBackup) + ' 天前備份' : '未備份'} ›</span></button></li>
       <li><button data-act="m-demo">示範資料<span>${hasDemo() ? '已載入' : '未載入'} ›</span></button></li>
       <li><button data-act="m-settings">其他設定<span>打工準備時間等 ›</span></button></li>
     </ul></section>
@@ -455,6 +552,7 @@
     openSheet(`<h3>新增</h3><div class="acts">
       <button data-act="new-event">臨時安排<small>臨時工作、線上會議、活動</small></button>
       <button data-act="new-cover">幫人代班<small>多一班，計入打工時數</small></button>
+      <button data-act="new-todo">待辦<small>買洗衣球、回郵件這類沒有固定時間的事</small></button>
       <button data-act="new-deadline">截止事項<small>作業、報告、投稿</small></button>
       <button data-act="new-anniv">紀念日<small>生日、紀念日（每年）</small></button>
       <button data-act="new-series">常規行程<small>每週固定的課或班（大量排程建議交給學期匯入）</small></button>
@@ -828,26 +926,96 @@
     });
   }
 
-  /* 備份 */
+  /* 備份：時の栞與小金庫一起（兩者在同一個網站底下，讀得到彼此的資料） */
+  function idbOpen(name) { return new Promise((res, rej) => { const r = indexedDB.open(name, 1); r.onupgradeneeded = () => r.result.createObjectStore('kv'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); r.onblocked = () => rej(new Error('blocked')); }); }
+  async function idbGet(name) { const d = await idbOpen(name); return new Promise((res, rej) => { const q = d.transaction('kv').objectStore('kv').get('state'); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); }); }
+  async function idbPut(name, v) { const d = await idbOpen(name); return new Promise((res, rej) => { const t = d.transaction('kv', 'readwrite'); t.objectStore('kv').put(v, 'state'); t.oncomplete = () => res(); t.onerror = () => rej(t.error); }); }
+  const within = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), ms))]);
+  const lsValid = o => !!o && typeof o === 'object' && o.accounts && o.tx && o.cats;
+  async function readLiushui() {
+    let a = null, b = null;
+    try { a = JSON.parse(await within(idbGet('liushui'), 2500) || 'null'); } catch (e) { }
+    try { b = JSON.parse(localStorage.getItem('liushui') || 'null'); } catch (e) { }
+    return [a, b].filter(lsValid).sort((x, y) => (y.rev || 0) - (x.rev || 0))[0] || null;
+  }
+  async function writeLiushui(o) {
+    o.rev = Date.now(); const j = JSON.stringify(o); let ok = false;
+    try { localStorage.setItem('liushui', j); ok = true; } catch (e) { }
+    try { await within(idbPut('liushui', j), 3000); ok = true; } catch (e) { }
+    return ok;
+  }
+  function usage() {
+    let n = 0;
+    try { for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); n += k.length + (localStorage.getItem(k) || '').length; } } catch (e) { }
+    return n;
+  }
+  const LS_CAP = 5242880; // 實測 Chrome 的上限約 524 萬字元
+  async function makeBundle() {
+    const L = await readLiushui();
+    let acct = null; try { acct = localStorage.getItem('liushui-acct'); } catch (e) { }
+    return { app: 'shiori-bundle', v: 1, at: new Date().toISOString(), shiori: S, liushui: L, liushuiAcct: acct };
+  }
+  async function markBacked(L) {
+    S.lastBackup = new Date().toISOString(); save();
+    if (L) { L.lastBackup = Date.now(); await writeLiushui(L); }
+  }
+  const daysSince = iso => iso ? Math.floor((Date.now() - new Date(iso).getTime()) / 864e5) : null;
   function backupView() {
+    const used = usage(), ds0 = daysSince(S.lastBackup);
     openSheet(`<h3>備份與還原</h3>
-      <button class="btn wide" id="bk-out">匯出備份檔</button>
-      <p class="note" style="margin-top:8px">匯出一個 .json 檔，存到電腦或雲端。換手機或清除瀏覽器資料前務必先匯出。</p>
-      <div class="f"><label for="bk-in">從備份檔還原（會覆蓋目前所有資料）</label><input id="bk-in" type="file" accept=".json,application/json"></div>`, root => {
-      root.querySelector('#bk-out').onclick = () => {
-        const blob = new Blob([JSON.stringify(S, null, 1)], { type: 'application/json' });
-        const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'shiori-備份-' + T() + '.json'; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 3000);
+      <p class="muted" style="margin:-4px 0 10px">一次備份「時の栞」的行程與「小金庫」的帳目，存成同一個檔案。${ds0 == null ? '還沒有備份過。' : '上次備份：' + (ds0 ? ds0 + ' 天前' : '今天') + '。'}</p>
+      <button class="btn wide" id="bk-dl">下載到手機</button>
+      <button class="btn ghost wide" id="bk-sh" style="margin-top:8px">分享到雲端硬碟、LINE 或 Email</button>
+      <p class="note" style="margin-top:10px">「下載」會存到手機的「下載」（Download）資料夾，在小米的「檔案管理」裡找得到。只存在手機上的備份，手機遺失就一起不見了，建議偶爾用「分享」傳一份到 Google 雲端硬碟或電腦。</p>
+      <div class="f"><label for="bk-in">從備份檔還原</label><input id="bk-in" type="file" accept=".json,application/json"></div>
+      <div class="note" id="bk-st">本機儲存空間：已用約 ${(used / LS_CAP * 100).toFixed(1)}%（${Math.round(used / 1000)} 千字元／上限約 524 萬）</div>`, root => {
+      const go = async share => {
+        const B = await makeBundle();
+        const name = '時の栞與小金庫備份-' + T() + '.json';
+        const text = JSON.stringify(B);
+        if (share) {
+          const file = new File([text], name, { type: 'application/json' });
+          if (!(navigator.canShare && navigator.canShare({ files: [file] }))) return toast('這個瀏覽器不支援分享檔案，請用「下載到手機」');
+          try { await navigator.share({ files: [file], title: name }); } catch (e) { if (e && e.name === 'AbortError') return; return toast('分享失敗'); }
+        } else {
+          const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text], { type: 'application/json' })); a.download = name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+        }
+        await markBacked(B.liushui); closeSheet(); render(); toast(B.liushui ? '已備份行程與帳目' : '已備份（這支手機上沒有小金庫的資料）');
       };
-      root.querySelector('#bk-in').onchange = ev => {
-        const f = ev.target.files[0]; if (!f) return;
-        f.text().then(t => {
-          const j = JSON.parse(t);
-          if (j && j.v && j.iv && j.data) return toast('這是加密的學期資料，請到「學期資料」匯入');
-          if (!j || !j.v || !Array.isArray(j.series)) throw 0;
-          S = Object.assign(blank(), j); save(); applySkin(); closeSheet(); render(); toast('已還原');
-        }).catch(() => toast('檔案格式不對'));
+      root.querySelector('#bk-dl').onclick = () => go(false);
+      root.querySelector('#bk-sh').onclick = () => go(true);
+      root.querySelector('#bk-in').onchange = ev => { const f = ev.target.files[0]; if (!f) return; f.text().then(t => restoreFrom(JSON.parse(t))).catch(() => toast('檔案格式不對')); };
+      if (navigator.storage && navigator.storage.persisted) navigator.storage.persisted().then(p => { const el = root.querySelector('#bk-st'); if (el) el.innerHTML += '<br>' + (p ? '已取得「持久儲存」：瀏覽器不會因為空間不足自動清除。' : '尚未取得「持久儲存」：瀏覽器在空間不足時可能清除資料，請定期備份。'); });
+    });
+  }
+  function restoreFrom(o) {
+    if (o && o.iv && o.data) return toast('這是加密的學期資料，請到「學期資料」匯入');
+    let sh = null, ls = null, acct = null;
+    if (o && o.app === 'shiori-bundle') { sh = o.shiori; ls = o.liushui; acct = o.liushuiAcct; }
+    else if (o && o.v && Array.isArray(o.series)) sh = o;
+    else if (lsValid(o)) ls = o;
+    if (!sh && !ls) return toast('看不懂這個檔案');
+    openSheet(`<h3>從備份還原</h3><p class="muted" style="margin:-4px 0 10px">${o.at ? '備份時間：' + esc(o.at.slice(0, 16).replace('T', ' ')) : ''}</p>
+      ${sh ? `<label class="ck"><input type="checkbox" id="rs-sh" checked>時の栞：常規行程 ${(sh.series || []).length} 條、臨時安排 ${(sh.events || []).length} 個、回顧 ${Object.keys(sh.reviews || {}).length} 天</label>` : ''}
+      ${ls ? `<label class="ck"><input type="checkbox" id="rs-ls" checked>小金庫：${Object.keys(ls.tx || {}).length} 筆紀錄、${Object.keys(ls.accounts || {}).length} 個帳戶</label>` : ''}
+      <p class="note">勾選的部分會<b>完全取代</b>這支手機上現有的資料。</p>
+      <button class="btn wide" id="rs-go">還原</button>`, root => {
+      const b = root.querySelector('#rs-go');
+      b.onclick = async () => {
+        if (!confirmTwice(b, '再按一次確認還原')) return;
+        const doS = sh && chk('rs-sh'), doL = ls && chk('rs-ls');
+        if (doS) { S = migrate(Object.assign(blank(), sh)); save(); applySkin(); }
+        if (doL) { const ok = await writeLiushui(ls); if (acct) try { localStorage.setItem('liushui-acct', acct); } catch (e) { } if (!ok) return toast('小金庫還原失敗'); }
+        closeSheet(); render(); toast(doL ? '已還原。小金庫請完全關掉再打開' : '已還原');
       };
     });
+  }
+  function backupNagHtml() {
+    const has = S.series.length || S.events.length || S.deadlines.length || Object.keys(S.reviews).length || (() => { try { return !!localStorage.getItem('liushui'); } catch (e) { return false; } })();
+    if (!has || S.backupSnooze === T()) return '';
+    const n = daysSince(S.lastBackup);
+    if (n != null && n < 14) return '';
+    return `<section class="card banner"><span>${n == null ? '還沒有備份過行程與帳目' : '已經 ' + n + ' 天沒有備份'}</span><span class="row-btns"><button class="btn sm" data-act="m-backup">備份</button><button class="btn sm ghost" data-act="bk-snooze">明天再說</button></span></section>`;
   }
 
   /* ---------- 加密學期資料 ---------- */
@@ -918,7 +1086,7 @@
   }
 
   /* ---------- 示範資料 ---------- */
-  function hasDemo() { return S.series.some(s => s.src === 'demo') || S.events.some(s => s.src === 'demo'); }
+  function hasDemo() { return S.series.some(s => s.src === 'demo') || S.events.some(s => s.src === 'demo') || S.todos.some(s => s.src === 'demo'); }
   function loadDemo() {
     clearDemo(true);
     const t = T(), ws = monday(t), from = E.addDays(ws, -14), to = E.addDays(ws, 70);
@@ -959,11 +1127,12 @@
     );
     const b = E.pd(E.addDays(t, 2));
     S.annivs.push({ id: 'demo-a1', src: D, name: '媽媽生日（示範）', kind: '生日', month: b.getMonth() + 1, day: b.getDate(), year: 1972, lead: 3, note: '記得打電話' });
+    S.todos.push({ id: 'demo-t1', src: D, title: '買洗衣球', date: t, note: '示範', done: false }, { id: 'demo-t2', src: D, title: '回覆編輯的信', date: '', note: '示範', done: false });
     S.welcomed = true; save(); render(); toast('已載入示範資料');
   }
   function clearDemo(silent) {
     const nd = x => x.src !== 'demo';
-    S.series = S.series.filter(nd); S.events = S.events.filter(nd); S.deadlines = S.deadlines.filter(nd); S.annivs = S.annivs.filter(nd);
+    S.series = S.series.filter(nd); S.events = S.events.filter(nd); S.deadlines = S.deadlines.filter(nd); S.annivs = S.annivs.filter(nd); S.todos = S.todos.filter(nd);
     S.exceptions = S.exceptions.filter(x => nd(x) && !String(x.seriesId).startsWith('demo-'));
     S.plans.templates = (S.plans.templates || []).filter(nd); S.plans.rules = (S.plans.rules || []).filter(nd);
     if (!silent) { save(); render(); toast('已清除示範資料'); }
@@ -1048,7 +1217,7 @@
     document.querySelectorAll('nav.tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === view));
     if (view !== 'day') clearInterval(clockTimer);
     $('#fab').hidden = !['day', 'week', 'month'].includes(view);
-    if (view === 'day') renderDay(); else if (view === 'week') renderWeek(); else if (view === 'month') renderMonth(); else if (view === 'focus') renderFocus(); else renderMore();
+    if (view === 'day') renderDay(); else if (view === 'week') renderWeek(); else if (view === 'month') renderMonth(); else if (view === 'review') renderReview(); else renderMore();
   }
   document.querySelectorAll('nav.tabs button').forEach(b => b.onclick = () => {
     view = b.dataset.tab;
@@ -1062,7 +1231,7 @@
   document.addEventListener('click', ev => {
     if (ev.target.closest('a[href]')) return;
     const el = ev.target.closest('[data-act]'); if (!el) return;
-    if (el.closest('#sheet') && !['new-event', 'new-cover', 'new-deadline', 'new-anniv', 'new-series'].includes(el.dataset.act)) return; // 面板內的按鈕各自處理
+    if (el.closest('#sheet') && !['new-event', 'new-cover', 'new-todo', 'new-deadline', 'new-anniv', 'new-series'].includes(el.dataset.act)) return; // 面板內的按鈕各自處理
     const a = el.dataset.act, d = el.dataset.date, id = el.dataset.id;
     switch (a) {
       case 'dprev': viewDate = E.addDays(viewDate, -1); render(); break;
@@ -1080,7 +1249,7 @@
       case 'dl-sub': setDl(id, 'submitted'); break;
       case 'dl-edit': deadlineForm(S.deadlines.find(x => x.id === id)); break;
       case 'anniv-edit': annivForm(S.annivs.find(x => x.id === id)); break;
-      case 'sleep': S.sleep.push({ id: uid(), s: new Date().toISOString(), w: null }); save(); render(); toast('晚安'); break;
+      case 'sleep': { S.sleep.push({ id: uid(), s: new Date().toISOString(), w: null }); save(); render(); const lt = logicalToday(); if (!S.reviews[lt]) reviewForm(lt, '晚安'); else toast('晚安'); break; }
       case 'wake': { const r = sleepState().rec; r.w = new Date().toISOString(); save(); render(); toast('早安，睡了 ' + dur((new Date(r.w) - new Date(r.s)) / 60000)); break; }
       case 'demo': loadDemo(); break;
       case 'welcome-skip': S.welcomed = true; save(); render(); break;
@@ -1091,20 +1260,14 @@
       case 'new-deadline': deadlineForm(); break;
       case 'new-anniv': annivForm(); break;
       case 'new-series': seriesForm(); break;
-      case 'fcat': focusPick.cat = el.dataset.v; savePick(); render(); break;
-      case 'fmode': focusPick.mode = el.dataset.v; savePick(); render(); break;
-      case 'fmins': focusPick.mins = +el.dataset.v; savePick(); render(); break;
-      case 'fstart': { const s = $('#fdl'); focusPick.dl = s ? s.value : ''; savePick(); run = { start: Date.now(), acc: 0, mode: focusPick.mode, mins: focusPick.mins, cat: focusPick.cat, dl: focusPick.dl, began: new Date().toISOString() }; saveRun(); render(); break; }
-      case 'fpause': run.acc = elapsed(); run.pausedAt = Date.now(); saveRun(); render(); break;
-      case 'fresume': run.start = Date.now(); run.pausedAt = null; saveRun(); render(); break;
-      case 'fstop': {
-        const min = Math.round(elapsed() / 60000);
-        if (min >= 1) { const b = new Date(run.began); S.focus.push({ id: uid(), date: E.ds(b), at: E.pad(b.getHours()) + ':' + E.pad(b.getMinutes()), min, cat: run.cat, dl: run.dl || '' }); save(); toast('記下 ' + dur(min)); } else toast('不到 1 分鐘，不記錄');
-        run = null; saveRun(); render(); break;
-      }
-      case 'fcancel': run = null; saveRun(); render(); toast('已放棄這次計時'); break;
-      case 'fmanual': manualFocus(); break;
-      case 'fdel': S.focus = S.focus.filter(f => f.id !== id); save(); render(); toast('已刪除'); break;
+      case 'rv-open': reviewForm(d); break;
+      case 'rv-skip': S.reviewSkip = d; save(); render(); break;
+      case 'rvm': { const [y, m] = rvMonth.split('-').map(Number); const dd = new Date(y, m - 1 + (+el.dataset.v), 1); rvMonth = dd.getFullYear() + '-' + E.pad(dd.getMonth() + 1); render(); break; }
+      case 'td-done': { const t = S.todos.find(x => x.id === id); t.done = true; t.doneAt = new Date().toISOString(); save(); render(); toast('完成：' + t.title); break; }
+      case 'td-edit': todoForm(S.todos.find(x => x.id === id)); break;
+      case 'm-todos': listTodos(); break;
+      case 'new-todo': todoForm(); break;
+      case 'bk-snooze': S.backupSnooze = T(); save(); render(); break;
       case 'm-deadlines': listDeadlines(); break;
       case 'm-annivs': listAnnivs(); break;
       case 'm-series': listSeries(); break;
@@ -1120,21 +1283,6 @@
       case 'm-settings': settingsView(); break;
     }
   });
-  function savePick() { try { localStorage.setItem('shiori-focus-pick', JSON.stringify(focusPick)); } catch (e) { } }
-  function manualFocus() {
-    openSheet(`<h3>補登專注時數</h3><p class="muted" style="margin:-4px 0 10px">例如用電腦開 Chill with You 讀書之後，在這裡記一筆。</p>
-      <div class="f"><span class="lb">項目</span><div class="pick" id="mf-c">${FOCUS_CATS.map((c, i) => `<button type="button" class="${i ? '' : 'on'}" data-v="${c}">${c}</button>`).join('')}</div></div>
-      <div class="f2">${fld('日期', inp('mf-d', T(), 'date'), 'mf-d')}${fld('分鐘', inp('mf-m', 60, 'number', 'min="1" max="900"'), 'mf-m')}</div>
-      <button class="btn wide" id="mf-save">記下</button>`, root => {
-      root.querySelectorAll('#mf-c button').forEach(b => b.onclick = () => { root.querySelectorAll('#mf-c button').forEach(x => x.classList.remove('on')); b.classList.add('on'); });
-      root.querySelector('#mf-save').onclick = () => {
-        const m = +val('mf-m'); if (!m || m < 1) return toast('請填分鐘數');
-        S.focus.push({ id: uid(), date: val('mf-d') || T(), min: Math.round(m), cat: root.querySelector('#mf-c .on').dataset.v, manual: true });
-        save(); closeSheet(); render(); toast('已補登');
-      };
-    });
-  }
-
   // 跨日、回到前景時重畫
   let lastDay = T();
   document.addEventListener('visibilitychange', () => {
@@ -1144,7 +1292,8 @@
   });
   setInterval(() => { if (view === 'day' && T() !== lastDay) { viewDate = T(); lastDay = T(); render(); } }, 60000);
 
-  applySkin(); render(); checkPack(false);
+  applySkin(); render(); checkPack(false); loadIdb();
+  try { if (navigator.storage && navigator.storage.persist) navigator.storage.persisted().then(p => { if (!p) navigator.storage.persist(); }); } catch (e) { }
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('./sw.js').catch(() => { });
   window.__shiori = { get S() { return S; }, render, loadDemo };
 })();

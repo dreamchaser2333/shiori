@@ -145,25 +145,36 @@ h2 .orn{width:14px;height:14px;flex:none;color:var(--gold)}
 .mo .c .dots i{width:6px;height:6px;border-radius:50%;background:var(--c)}
 .mo .c .lb{font-size:9.5px;color:var(--ink2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
 
-/* 專注 */
-.ring{position:relative;width:220px;height:220px;margin:6px auto 4px}
-.ring canvas{width:100%;height:100%}
-.ring .in{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center}
-.ring .in b{font-family:var(--f-l);font-size:40px;font-weight:500;letter-spacing:.04em}
-.ring .in span{font-size:12.5px;color:var(--ink2)}
+/* 回顧 */
 .seg{display:flex;background:var(--soft);border-radius:999px;padding:3px;gap:2px}
 .seg button{flex:1;border-radius:999px;padding:6px 0;font-size:13.5px;color:var(--ink2)}
-.seg button.on{background:var(--card);color:var(--ink);box-shadow:0 1px 4px rgba(0,0,0,.2)}
+.seg button.on{background:var(--acc);color:#fff}
+.seg.sm button{padding:4px 9px;font-size:12.5px;flex:none}
 .pick{display:flex;flex-wrap:wrap;gap:6px}
 .pick button{border:var(--edge);border-radius:999px;padding:4px 12px;font-size:13.5px;color:var(--ink2)}
 .pick button.on{background:var(--acc);border-color:var(--acc);color:#fff}
-.bars{display:grid;grid-template-columns:repeat(7,1fr);gap:6px;align-items:end;height:110px;margin-top:8px}
-.bars div{display:flex;flex-direction:column;justify-content:flex-end;align-items:center;height:100%;font-size:11px;color:var(--ink2);gap:3px}
-.bars i{display:block;width:70%;border-radius:4px 4px 2px 2px;background:var(--c-study);min-height:2px}
+.rvrow{display:flex;flex-direction:column;gap:6px;padding:9px 0}
+.rvrow>span:first-child b{font-weight:600;display:block}
+.rvrow>span:first-child span{font-size:12.5px;color:var(--ink2)}
+.moods{display:grid;grid-template-columns:repeat(5,1fr);gap:6px}
+.moods button{border:var(--edge);border-radius:12px;padding:6px 2px 5px;font-size:11px;color:var(--ink2);display:flex;flex-direction:column;align-items:center;gap:1px}
+.moods button i{font-style:normal;font-size:24px;line-height:1.2}
+.moods button.on{background:var(--acc);border-color:var(--acc);color:#fff}
+.rvsum{display:flex;gap:12px;align-items:center}
+.rvsum .emo{font-size:40px;line-height:1}
+.rvsum b{display:block;font-weight:600}.rvsum span span{color:var(--ink2);font-size:13.5px;overflow-wrap:anywhere}
+.wkrv{display:grid;grid-template-columns:repeat(7,1fr);gap:4px;text-align:center}
+.wkrv button{display:flex;flex-direction:column;align-items:center;gap:3px;padding:6px 0;border-radius:10px;font-size:12px;color:var(--ink2)}
+.wkrv button.now{background:var(--soft)}
+.wkrv i{font-style:normal;font-size:22px;line-height:1.2;min-height:26px;color:var(--ink)}
+.wkrv .prog{width:70%;display:block}
+.wkrv small{font-size:10.5px;min-height:14px}
 .stat{display:grid;grid-template-columns:repeat(3,1fr);text-align:center;gap:4px}
 .stat .k{font-size:12px;color:var(--ink2)} .stat .v{font-family:var(--f-l);font-size:19px}
 .prog{height:6px;border-radius:3px;background:var(--soft);overflow:hidden;margin-top:3px}
 .prog i{display:block;height:100%;background:var(--c)}
+.tick{width:24px;height:24px;border-radius:50%;border:2px solid var(--gold);flex:none;margin:0 10px}
+.tick:active{background:var(--acc)}
 
 /* 清單 */
 .list{list-style:none;margin:0;padding:0}
@@ -220,7 +231,7 @@ nav.tabs button.on{color:var(--acc)}
   <button data-tab="day"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="8.5"/><path d="M12 7v5l3.2 2"/></svg>今日</button>
   <button data-tab="week"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3.5" y="5" width="17" height="15" rx="2.5"/><path d="M3.5 9.5h17M9 9.5V20M14.5 9.5V20"/></svg>週</button>
   <button data-tab="month"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3.5" y="5" width="17" height="15" rx="2.5"/><path d="M3.5 9.5h17M8 3.5v3M16 3.5v3"/><circle cx="8.5" cy="14" r=".9" fill="currentColor"/><circle cx="12" cy="14" r=".9" fill="currentColor"/><circle cx="15.5" cy="14" r=".9" fill="currentColor"/></svg>月</button>
-  <button data-tab="focus"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M7 3.5h10M7 20.5h10M8 3.5c0 5 8 5 8 8.5s-8 3.5-8 8.5M16 3.5c0 5-8 5-8 8.5s8 3.5 8 8.5"/></svg>專注</button>
+  <button data-tab="review"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M18.5 4.5c-6 1-11 6-12.5 14.5M6 19l2-5.5"/><path d="M18.5 4.5c.5 5-3 9-8.5 9.5"/><path d="M4 20.5h9"/></svg>回顧</button>
   <button data-tab="more"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M7 3.5h10v17l-5-3.5-5 3.5z"/></svg>更多</button>
 </div></nav>
 <button class="fab" id="fab" aria-label="新增">＋</button>
