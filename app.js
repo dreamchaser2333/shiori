@@ -15,7 +15,7 @@
   ];
   const VERSES = ['光陰者，百代之過客', '寸陰是競', '一寸光陰一寸金', '日月逝矣，歲不我與', '盛年不重來，一日難再晨', '及時當勉勵，歲月不待人'];
   const KIND_COLOR = { '課程': 'var(--c-course)', '打工': 'var(--c-work)', '換班': 'var(--c-work)', '代班': 'var(--c-work)', '臨時工作': 'var(--c-temp)', '會議': 'var(--c-temp)', '活動': 'var(--c-temp)', '其他': 'var(--c-temp)' };
-  const CAT_COLOR = { '學習': 'var(--c-study)', '自媒體': 'var(--c-media)', '娛樂': 'var(--c-play)', '睡眠': 'var(--c-sleep)', '用餐': 'var(--c-meal)' };
+  const CAT_COLOR = { '學習': 'var(--c-study)', '自媒體': 'var(--c-media)', '娛樂': 'var(--c-play)', '睡眠': 'var(--c-sleep)', '用餐': 'var(--c-meal)', '盥洗': 'var(--c-sleep)' };
     
   /* ---------- 資料 ---------- */
   function blank() {
@@ -56,7 +56,7 @@
   const T = E.today;
   const fmtMD = d => { const p = E.pd(d); return (p.getMonth() + 1) + '/' + p.getDate(); };
   const fmtDay = d => fmtMD(d) + '（' + E.WK[E.dow(d)] + '）';
-  const hm = E.hm;
+  const hm = m => m >= 1440 ? E.hm(m - 1440) : E.hm(m); // 跨到隔天的時間照樣顯示 01:00
   const dur = m => { m = Math.round(m); const h = Math.floor(m / 60), r = m % 60; return h ? (r ? h + ' 小時 ' + r + ' 分' : h + ' 小時') : r + ' 分'; };
   const durS = m => { m = Math.round(m); const h = Math.floor(m / 60), r = m % 60; return h ? (r ? h + 'h' + r + 'm' : h + 'h') : r + 'm'; };
   const nowMin = () => { const n = new Date(); return n.getHours() * 60 + n.getMinutes(); };
@@ -181,6 +181,8 @@
         if (t.place) sub.push(t.place);
         if (t.note) sub.push(t.note);
         if (t.link) sub.push('有會議連結');
+        if (t.overnight) sub.unshift('到隔天 ' + hm(t.end));
+        if (t.cont) sub.unshift('接續前一天');
       } else if (t.type === 'buffer') {
         color = 'var(--c-buffer)'; title = t.title + '<span class="tag">' + esc(t.for) + '</span>';
       } else if (t.type === 'sleep' || t.type === 'fixed') {
@@ -192,7 +194,7 @@
         else if (t.partial) sub.push('原時段剩下的部分，其餘移到別處');
         if (t.shrunk) sub.push('縮短為 ' + dur(t.got) + '（原 ' + dur(t.origLen) + '）');
       }
-      const act = t.type === 'hard' || t.type === 'cancelled' ? `data-act="item" data-key="${esc(t.key)}" data-date="${d}"` : t.type === 'plan' || t.type === 'fixed' || t.type === 'sleep' ? `data-act="plan" data-tpl="${t.tpl}" data-idx="${t.idx}" data-date="${d}"` : '';
+      const act = t.type === 'hard' || t.type === 'cancelled' ? `data-act="item" data-key="${esc(t.cont ? t.origKey : t.key)}" data-date="${t.cont ? t.origDate : d}"` : t.type === 'plan' || t.type === 'fixed' || t.type === 'sleep' ? `data-act="plan" data-tpl="${t.tpl}" data-idx="${t.idx}" data-date="${d}"` : '';
       const nowCls = isToday && nm >= t.start && nm < t.end && t.type !== 'cancelled' ? ' style="background:var(--soft);border-radius:10px"' : '';
       h += `<li class="${cls} ${act ? 'tap' : ''}" ${act}${nowCls}><span class="tm"><b>${hm(t.start)}</b>${hm(t.end)}</span><span class="cb" style="--c:${color}"></span>
         <span class="bd"><b>${title}${tags}</b>${sub.length ? `<span>${esc(sub.join('・'))}</span>` : ''}</span></li>`;
@@ -250,7 +252,7 @@
     const days = [...Array(7)].map((_, i) => E.addDays(weekStart, i));
     const Ls = days.map(d => E.layout(S, d));
     let lo = 7 * 60, hi = 24 * 60;
-    Ls.forEach(L => L.timeline.forEach(t => { if (t.type !== 'sleep' && t.type !== 'buffer') { lo = Math.min(lo, Math.floor(t.start / 60) * 60); } }));
+    Ls.forEach(L => L.timeline.forEach(t => { if ((t.type === 'hard' && !t.cont) || t.type === 'plan') { lo = Math.min(lo, Math.floor(t.start / 60) * 60); } }));
     const PX = 0.6; // 每分鐘 0.6px → 每小時 36px
     const H = (hi - lo) * PX;
     const end = E.addDays(weekStart, 6);
@@ -297,7 +299,7 @@
     for (let i = 0; i < 42; i++) {
       const d = E.addDays(start, i);
       if (i >= 35 && d.slice(0, 7) !== monthYM) break;
-      const items = E.itemsForDate(S, d).filter(it => it.src === 'event' || it.ex);
+      const items = E.itemsForDate(S, d).filter(it => !it.cont && (it.src === 'event' || it.ex));
       const dls = S.deadlines.filter(x => x.due === d && x.status !== 'submitted');
       const ans = S.annivs.filter(a => a.month === E.pd(d).getMonth() + 1 && a.day === E.pd(d).getDate());
       const tds = S.todos.filter(t => !t.done && t.date === d);
@@ -482,6 +484,7 @@
     const rows = [];
     for (let x = a; x <= b; x = E.addDays(x, 1)) {
       for (const it of E.itemsForDate(S, x)) {
+        if (it.cont) continue;
         if (it.src === 'series' && it.kind === '打工' && !it.cancelled) work += it.end - it.start;
         if (it.src === 'event' && it.work) work += it.end - it.start;
         if (it.cancelled && it.kind === '課程') cancelled++;
@@ -572,7 +575,7 @@
       ${fld('會議連結（選填）', inp('ev-link', e.link, 'url', 'placeholder="https://"'), 'ev-link')}
       ${fld('備註（選填）', `<textarea id="ev-note">${esc(e.note)}</textarea>`, 'ev-note')}
       <label class="ck"><input type="checkbox" id="ev-work" ${e.work ? 'checked' : ''}>計入打工時數</label>
-      <p class="note">臨時打工不會自動預留準備與出發時間，請把通勤算進開始時間。</p>
+      <p class="note">結束時間比開始早，代表到隔天（例如 16:00–01:00）。臨時打工不會自動預留準備與出發時間，請把通勤算進開始時間。</p>
       <div class="row-btns"><button class="btn" id="ev-save">儲存</button>${isNew ? '' : '<button class="btn ghost" id="ev-del">刪除</button>'}</div>`, root => {
       const k = root.querySelector('#ev-kind');
       k.onchange = () => { if (['代班', '換班'].includes(k.value)) document.getElementById('ev-work').checked = true; };
@@ -580,10 +583,10 @@
         const o = { kind: val('ev-kind'), title: val('ev-title'), date: val('ev-date'), start: val('ev-start'), end: val('ev-end'), place: val('ev-place'), link: val('ev-link'), note: val('ev-note'), work: chk('ev-work') };
         if (!o.title) o.title = o.kind;
         if (!o.date || !o.start) return toast('請填日期與開始時間');
-        if (o.end && o.end <= o.start) return toast('結束時間要晚於開始時間');
         if (!o.end) o.end = E.hm(Math.min(1440, E.tm(o.start) + 60));
         if (o.link && !/^https?:\/\//i.test(o.link)) o.link = 'https://' + o.link;
-        const clash = E.layout(S, o.date).items.filter(i => !i.cancelled && i.ref !== e.id && i.start < E.tm(o.end) && E.tm(o.start) < i.end);
+        const oe = E.tm(o.end) <= E.tm(o.start) ? E.tm(o.end) + 1440 : E.tm(o.end);
+        const clash = E.layout(S, o.date).items.filter(i => !i.cancelled && !i.cont && i.ref !== e.id && i.start < oe && E.tm(o.start) < i.end);
         if (isNew) S.events.push(Object.assign({ id: uid() }, o)); else Object.assign(S.events.find(x => x.id === e.id), o);
         save(); closeSheet(); viewDate = o.date; view = 'day'; render();
         toast(clash.length ? '已儲存。注意：和「' + clash[0].title + '」時間重疊' : '已儲存');
@@ -662,7 +665,6 @@
       root.querySelector('#se-save').onclick = () => {
         const o = { title: val('se-title'), kind: val('se-kind'), weekdays: wkVal(), start: val('se-start'), end: val('se-end'), place: val('se-place'), from: val('se-from'), to: val('se-to'), note: val('se-note') };
         if (!o.title || !o.start || !o.end || !o.weekdays.length) return toast('請填名稱、星期與時間');
-        if (o.end <= o.start) return toast('結束時間要晚於開始時間');
         if (isNew) S.series.push(Object.assign({ id: uid(), src: 'local' }, o)); else Object.assign(S.series.find(x => x.id === s.id), o);
         save(); closeSheet(); render(); toast('已儲存');
       };
@@ -737,7 +739,7 @@
       <button class="btn wide" id="sw-save">確定換班</button>`, root => {
       root.querySelector('#sw-save').onclick = () => {
         const nd = val('sw-date'), ns = val('sw-start'), ne = val('sw-end'), who = val('sw-who');
-        if (!nd || !ns || !ne || ne <= ns) return toast('請確認日期與時間');
+        if (!nd || !ns || !ne || ne === ns) return toast('請確認日期與時間');
         const evId = uid();
         S.events.push({ id: evId, kind: '換班', title: s.title, date: nd, start: ns, end: ne, place: s.place || '', note: '由 ' + fmtDay(d) + ' 換來' + (who ? '（和 ' + who + '）' : ''), work: true, swapOf: s.id });
         S.exceptions.push({ id: uid(), seriesId: s.id, date: d, type: 'cancel', reason: '換班', cover: who, swapTo: evId, note: '換到 ' + fmtDay(nd) + ' ' + ns });
@@ -754,7 +756,7 @@
       <button class="btn wide" id="md-save">儲存</button>`, root => {
       root.querySelector('#md-save').onclick = () => {
         const o = { id: uid(), seriesId: s.id, date: d, type: 'modify', reason: val('md-r'), start: val('md-start'), end: val('md-end'), place: val('md-place'), note: val('md-note') };
-        if (o.end <= o.start) return toast('結束時間要晚於開始時間');
+        if (o.end === o.start) return toast('請確認時間');
         S.exceptions.push(o); save(); closeSheet(); render(); toast('已修改這天');
       };
     });

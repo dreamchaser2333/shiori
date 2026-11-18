@@ -15,6 +15,7 @@
   const DEFAULT_CATS = {
     '睡眠': { prio: 99, sleep: true, color: 'sleep' },
     '用餐': { prio: 50, fixed: true, color: 'meal' },
+    '盥洗': { prio: 50, fixed: true, color: 'sleep' },
     '自媒體': { prio: 3, color: 'media' },
     '學習': { prio: 2, color: 'study' },
     '娛樂': { prio: 1, color: 'play' }
@@ -22,7 +23,8 @@
   const WORK_KINDS = ['打工'];
   const BUFFER_EVENT_KINDS = ['換班']; // 換班仍是自己的固定工作，一樣預留準備與出發
   const MIN_KEEP = 30;   // 壓縮時每段最短保留
-  const MIN_PIECE = 15;  // 少於這個長度的空檔不拿來排
+  const MIN_PIECE = 15;  // 原位置剩下的部分，少於這個長度就不保留
+  const MIN_MOVE = 30;   // 移到別處時，每一段至少 30 分鐘
 
   function cats(st) { return Object.assign({}, DEFAULT_CATS, (st.plans && st.plans.cats) || {}); }
 
@@ -33,7 +35,18 @@
     return (s.weekdays || []).includes(dow(d));
   }
 
+  // 結束時間早於開始時間 = 跨到隔天（例如 21:00–01:00）。隔天清晨的那一段另外列為「接續」。
+  const fixEnd = it => { if (it.end != null && it.end <= it.start) { it.end += 1440; it.overnight = true; } return it; };
   function itemsForDate(st, d) {
+    const out = expand(st, d);
+    for (const it of expand(st, addDays(d, -1))) {
+      if (it.cancelled || it.end <= 1440) continue;
+      out.push(Object.assign({}, it, { key: it.key + ':cont', origKey: it.key, origDate: addDays(d, -1), start: 0, end: it.end - 1440, cont: true, overnight: false }));
+    }
+    out.sort((a, b) => a.start - b.start || a.end - b.end);
+    return out;
+  }
+  function expand(st, d) {
     const out = [];
     for (const s of st.series || []) {
       if (!seriesOn(s, d)) continue;
@@ -54,7 +67,7 @@
           it.reason = ex.reason || '變動';
         }
       }
-      out.push(it);
+      out.push(fixEnd(it));
     }
     for (const e of st.events || []) {
       if (e.date !== d) continue;
@@ -63,13 +76,13 @@
         start: tm(e.start), end: tm(e.end) ?? tm(e.start), place: e.place || '', note: e.note || '', link: e.link || '',
         cancelled: false, changed: false, work: !!e.work
       });
+      fixEnd(out[out.length - 1]);
     }
-    out.sort((a, b) => a.start - b.start || a.end - b.end);
     return out;
   }
 
   function needsBuffer(it) {
-    return !it.cancelled && ((it.src === 'series' && WORK_KINDS.includes(it.kind)) || (it.src === 'event' && BUFFER_EVENT_KINDS.includes(it.kind)));
+    return !it.cancelled && !it.cont && ((it.src === 'series' && WORK_KINDS.includes(it.kind)) || (it.src === 'event' && BUFFER_EVENT_KINDS.includes(it.kind)));
   }
 
   function buffersFor(st, items) {
@@ -187,52 +200,57 @@
     let gaps = subtract([[wake, bed]], blocked).filter(g => g[1] - g[0] >= MIN_PIECE);
     const cap = total(gaps);
 
-    // 決定每段的目標長度
-    let pool = soft.map(b => Object.assign({ len: b.end - b.start }, b));
+    // 依優先順序分層安排：自媒體 → 學習 → 娛樂。高優先的先排，低優先的只用剩下的空檔。
+    // 同一層放不下時，各段平均縮短（最少 30 分鐘）；仍放不下就取消該層較晚的時段。
     const cancelled = [];
-    let lens;
-    while (pool.length) {
-      lens = waterfill(pool, cap);
-      if (lens) break;
-      // 取消最低優先、同優先取時間較晚的一段
-      let k = 0;
-      pool.forEach((b, i) => { if (b.prio < pool[k].prio || (b.prio === pool[k].prio && b.start > pool[k].start)) k = i; });
-      cancelled.push(Object.assign({ status: 'cancel' }, pool[k]));
-      pool.splice(k, 1);
-    }
-    pool.forEach((b, i) => { b.target = lens[i]; b.pieces = []; });
-
-    // 第一輪：原位置還能用的部分先保留
-    for (const b of pool) {
-      let need = b.target;
-      const here = subtract([[b.start, b.end]], subtract([[0, 1440]], gaps)).filter(g => g[1] - g[0] >= Math.min(MIN_PIECE, need));
-      for (const g of here) {
-        if (need <= 0) break;
-        const e = Math.min(g[1], g[0] + need);
-        b.pieces.push([g[0], e]); need -= e - g[0]; gaps = take(gaps, g[0], e);
+    const pool = soft.map(b => Object.assign({ len: b.end - b.start, pieces: [] }, b));
+    const tiers = [...new Set(pool.map(b => b.prio))].sort((a, b) => b - a);
+    for (const pr of tiers) {
+      let tier = pool.filter(b => b.prio === pr && !b.dead);
+      const cap = total(gaps.filter(g => g[1] - g[0] >= MIN_MOVE));
+      let lens;
+      while (tier.length) {
+        lens = waterfill(tier, cap);
+        if (lens) break;
+        let k = 0; tier.forEach((b, x) => { if (b.start > tier[k].start) k = x; });
+        tier[k].dead = true; cancelled.push(Object.assign({ status: 'cancel' }, tier[k])); tier = tier.filter(b => !b.dead);
       }
-      b.rest = need;
-    }
-    // 第二輪：不夠的部分移到最近的空檔（優先度高的先挑）
-    const order = pool.slice().sort((p, q) => q.prio - p.prio || p.start - q.start);
-    for (const b of order) {
-      let need = b.rest, guard = 0;
-      while (need > 0 && guard++ < 20) {
-        const pref = b.pieces.length ? b.pieces[b.pieces.length - 1][1] : b.start;
-        let spot = nearestPlace(gaps, need, b.start);
-        if (spot) { b.pieces.push([spot.s, spot.s + need]); gaps = take(gaps, spot.s, spot.s + need); need = 0; break; }
-        // 沒有一整段放得下：拿離原時間最近、夠長的空檔切一塊
-        const usable = gaps.filter(g => g[1] - g[0] >= Math.min(MIN_PIECE, need));
-        if (!usable.length) break;
-        usable.sort((p, q) => Math.abs(p[0] - pref) - Math.abs(q[0] - pref));
-        const g = usable[0], e = Math.min(g[1], g[0] + need);
-        b.pieces.push([g[0], e]); gaps = take(gaps, g[0], e); need -= e - g[0];
+      tier.forEach((b, x) => { b.target = lens[x]; });
+      // 先保留原位置還能用的部分
+      for (const b of tier) {
+        let need = b.target;
+        const here = subtract([[b.start, b.end]], subtract([[0, 1440]], gaps)).filter(g => g[1] - g[0] >= Math.min(MIN_PIECE, need));
+        for (const g of here) {
+          if (need <= 0) break;
+          const e = Math.min(g[1], g[0] + need);
+          b.pieces.push([g[0], e]); need -= e - g[0]; gaps = take(gaps, g[0], e);
+        }
+        b.rest = need;
       }
-      b.lostMin = need;
+      // 不夠的部分移到離原時間最近的空檔：先找真正空著的時間，不夠才佔用較低優先的時段。
+      // 每段至少 30 分鐘；放不下就縮短。
+      const lowerOrig = merge(pool.filter(b => b.prio < pr && !b.dead).map(b => [b.start, b.end]));
+      for (const b of tier.slice().sort((p, q) => p.start - q.start)) {
+        let need = b.rest, guard = 0;
+        for (const pass of [0, 1]) {
+          while (need >= MIN_MOVE && guard++ < 20) {
+            const pool2 = pass === 0 ? subtract(gaps, lowerOrig) : gaps;
+            const spot = nearestPlace(pool2, need, b.start);
+            if (spot) { b.pieces.push([spot.s, spot.s + need]); gaps = take(gaps, spot.s, spot.s + need); need = 0; break; }
+            const usable = pool2.filter(g => g[1] - g[0] >= MIN_MOVE);
+            if (!usable.length) break;
+            usable.sort((p, q) => Math.abs(p[0] - b.start) - Math.abs(q[0] - b.start));
+            const g = usable[0], e = Math.min(g[1], g[0] + need);
+            b.pieces.push([g[0], e]); gaps = take(gaps, g[0], e); need -= e - g[0];
+          }
+        }
+        b.lostMin = need;
+      }
     }
+    const alive = pool.filter(b => !b.dead);
 
     const softOut = [];
-    for (const b of pool) {
+    for (const b of alive) {
       const got = b.pieces.reduce((s, p) => s + p[1] - p[0], 0);
       const inPlace = b.pieces.every(p => p[0] >= b.start && p[1] <= b.end);
       let status = 'keep';
@@ -285,7 +303,7 @@
     const special = [];
     for (const day of [d, tmr]) {
       for (const it of itemsForDate(st, day)) {
-        const isSpecial = it.src === 'event' || it.ex;
+        const isSpecial = !it.cont && (it.src === 'event' || it.ex);
         if (!isSpecial) continue;
         special.push(Object.assign({ day, when: day === d ? '今天' : '明天' }, it));
       }
@@ -314,7 +332,7 @@
     const out = [];
     for (let i = 2; i <= days; i++) {
       const day = addDays(d, i);
-      for (const it of itemsForDate(st, day)) if (it.src === 'event' || it.ex) out.push(Object.assign({ day, kind2: 'item' }, it));
+      for (const it of itemsForDate(st, day)) if (!it.cont && (it.src === 'event' || it.ex)) out.push(Object.assign({ day, kind2: 'item' }, it));
       for (const x of st.deadlines || []) if (x.due === day && x.status !== 'submitted') out.push({ day, kind2: 'deadline', title: x.title, kind: x.kind, ref: x.id });
       for (const a of st.annivs || []) { const n = annivNext(a, d); if (n.date === day) out.push({ day, kind2: 'anniv', title: a.name, kind: a.kind, years: n.years, ref: a.id }); }
       for (const t of st.todos || []) if (!t.done && t.date === day) out.push({ day, kind2: 'todo', title: t.title, kind: '待辦', ref: t.id });
@@ -331,7 +349,7 @@
     for (let i = 0; i < days; i++) {
       const d = addDays(first, i);
       for (const it of itemsForDate(st, d)) {
-        if (it.cancelled) continue;
+        if (it.cancelled || it.cont) continue;
         const isWork = (it.src === 'series' && WORK_KINDS.includes(it.kind)) || (it.src === 'event' && it.work);
         if (isWork) rows.push({ date: d, title: it.title, kind: it.src === 'series' ? (it.changed ? '固定班（有變動）' : '固定班') : it.kind, min: Math.max(0, it.end - it.start), start: it.start, end: it.end });
       }
